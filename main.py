@@ -13,8 +13,10 @@ from gfn_trainer import GFNTrainer
 class Argument(Tap):
     baseline: bool = False
     mode: Literal["train", "eval"] = "train"
-    model_name: str = "gpt2"
-    target_model: str = "CompVis/stable-diffusion-v1-4"
+    # model_name: str = "gpt2"
+    lm_name: str = "gpt2"
+    # target_model: str = "CompVis/stable-diffusion-v1-4"
+    sd_name: str = "CompVis/stable-diffusion-v1-4"
     clip_model: str = "ViT-L/14"
     aes_model: str = "aesthetic/sac+logos+ava1-l14-linearMSE.pth"
     sentence_encoder: str = "sentence-transformers/paraphrase-MiniLM-L6-v2"
@@ -24,7 +26,7 @@ class Argument(Tap):
     save_dir: str = "./save"
 
     prompt_file: str = "prompts/initial_prompt.jsonl"
-    eval_prompt_file: str = "prompts/eval_prompt.jsonl"
+    eval_prompt_file: str = "prompts/eval_prompt_lexica.jsonl"
     few_shot_file: str = "none"
 
     epochs: int = 1
@@ -44,7 +46,7 @@ class Argument(Tap):
     load_buffer: bool = False
     buffer_size: int = 5000
     sim_tolerance: float = 1.0
-    prioritization: Literal["c_reward", "reward", "none"] = "none"
+    prioritization: Literal["c_reward", "reward", "none"] = "reward"
     buffer_ckpt: str = ""
     compare: str = "reward"
     metric: Literal["edit", "cosine"] = "cosine"
@@ -74,12 +76,11 @@ class Argument(Tap):
 
     # victim model
     num_images_per_prompt: int = 1
-    num_prompts_per_prompt: int = 16
     do_sample: bool = True
 
     # wandb
     exp_name: str = "debug"
-    wandb_project: str = "prompt-adapt"
+    wandb_project: str = "prompt-adaptation"
     num_threads: int = 4
 
     # additional parameters
@@ -96,6 +97,7 @@ class Argument(Tap):
     
     # training objective
     loss: str = "fl-db"
+    vargrad: bool = False
 
 if __name__ == "__main__":
     args = Argument(explicit_bool=True).parse_args()
@@ -106,7 +108,3 @@ if __name__ == "__main__":
         print("train")
         trainer = GFNTrainer(args)
         trainer.train()
-    elif args.mode == "eval":
-        print("eval")
-        trainer = GFNTrainer(args)
-        trainer.eval()

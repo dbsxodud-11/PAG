@@ -1,0 +1,11 @@
+wandb/
+__pycache__/
+
+save/pag/
+save/gpt2-sft-position-final/latest/*.bin
+
+prompts/*.txt
+prompts/initial_prompt.jsonl
+
+logs/
+results/

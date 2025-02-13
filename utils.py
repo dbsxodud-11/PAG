@@ -260,7 +260,7 @@ class ReplayBuffer(object):
             # raise NotImplementedError
             prob = np.ones(len(self.buffer)) / len(self.buffer)
         idx = np.random.choice(
-            len(self.buffer), num_samples, p=prob, replace=False)
+            len(self.buffer), num_samples, p=prob, replace=True)
         
         # right-side padding
         prompt_ids = [self.buffer[i].prompt_ids for i in idx]

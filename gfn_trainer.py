@@ -7,9 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import autocast
-from torchvision.models import inception_v3
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-from diffusers import LCMScheduler, AutoPipelineForText2Image, AutoencoderTiny
 from collections import defaultdict
 from typing import Dict, List, Union
 import wandb
@@ -18,14 +16,11 @@ import numpy as np
 from tqdm import tqdm
 from csv_logger import CsvLogger
 from dataset import get_dataloader
-from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
-                          get_linear_schedule_with_warmup)
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer 
 from sentence_transformers import SentenceTransformer
 from accelerate import Accelerator
 
-from utils import (CosineRelayBuffer, InfIterator,
-                   ReplayBuffer, formatted_dict, AestheticMlp)
+from utils import CosineRelayBuffer, InfIterator, ReplayBuffer, formatted_dict, AestheticMlp
 
 class FlowFunction(nn.Module):
     def __init__(self, dim):
@@ -53,13 +48,13 @@ def avg_pooling(last_hidden, attention_mask):
     avg_pool = torch.sum(last_hidden * input_mask_expanded, 1) / denom
     return avg_pool
 
-def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos_token_id, temperature, min_len=15, max_len=30, num_samples=1, vargrad=False, exploration="beam", sparsemax=False):
+
+def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos_token_id, temperature, min_len=15, max_len=30, num_samples=1, vargrad=False):
     active_seqs = torch.ones(prompt_ids.size(0)).bool().to(prompt_ids.device)
     actions = prompt_ids.clone()
     state = prompt_ids.clone()
     sum_logpf = torch.zeros(prompt_ids.size(0)).float().to(prompt_ids.device)
     attention_mask = prompt_attention_mask.clone()
-    # print(active_seqs.shape, actions.shape, state.shape, sum_logpf.shape, attention_mask.shape)
     
     # repeat the prompt_ids for num_samples times
     active_seqs = active_seqs.repeat(num_samples)
@@ -67,7 +62,6 @@ def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos
     state = state.repeat(num_samples, 1)
     sum_logpf = sum_logpf.repeat(num_samples)
     attention_mask = attention_mask.repeat(num_samples, 1)
-    # print(active_seqs.shape, actions.shape, state.shape, sum_logpf.shape, attention_mask.shape)
     
     outputs = model.module(
         state[:, :-1], attention_mask=attention_mask[:, :-1], output_hidden_states=True)
@@ -137,7 +131,8 @@ def generate_and_return_z_logprob(model, prompt_ids, prompt_attention_mask,  eos
         results = {"actions": actions, "sum_logpf": sum_logpf, "log_z": log_z}
     return results
 
-def generate_and_return_flow_logprob(model, prompt_ids, prompt_attention_mask, eos_token_id, temperature, min_len=15, max_len=30, num_samples=1, vargrad=False, exploration="beam", sparsemax=False, proj_z=None):
+
+def generate_and_return_flow_logprob(model, prompt_ids, prompt_attention_mask, eos_token_id, temperature, min_len=15, max_len=30, num_samples=1, vargrad=False, proj_z=None):
     active_seqs = torch.ones(prompt_ids.size(0)).bool().to(prompt_ids.device)
     actions = prompt_ids.clone()
     state = prompt_ids.clone()
@@ -214,7 +209,8 @@ def generate_and_return_flow_logprob(model, prompt_ids, prompt_attention_mask, e
     results = {"actions": actions, "log_fs": log_fs, "log_pfs": log_pfs, "attn_mask": attention_mask[:, prompt_ids.size(1):]}
     return results
 
-def get_logpf_and_logz(prompt_batch, response_batch, model, eos_token_id, max_len=30, vargrad=False, sparsemax=False, temp=1.0):
+
+def get_logpf_and_logz(prompt_batch, response_batch, model, eos_token_id, max_len=30, vargrad=False):
     prompt_ids = prompt_batch["input_ids"]
     prompt_attention_mask = prompt_batch["attention_mask"]
     
@@ -284,7 +280,8 @@ def get_logpf_and_logz(prompt_batch, response_batch, model, eos_token_id, max_le
     else:
         return sum_logpf, log_z
 
-def get_logpf_and_logf(prompt_batch, response_batch, model, eos_token_id, max_len=30, vargrad=False, sparsemax=False, temp=1.0, proj_z=None):
+
+def get_logpf_and_logf(prompt_batch, response_batch, model, eos_token_id, max_len=30, vargrad=False, proj_z=None):
     prompt_ids = prompt_batch["input_ids"]
     prompt_attention_mask = prompt_batch["attention_mask"]
     
@@ -374,7 +371,7 @@ class GFNTrainer(object):
                     name=args.exp_name)
         
         self.device = self.accelerator.device
-        config = AutoConfig.from_pretrained(args.model_name)
+        config = AutoConfig.from_pretrained(args.lm_name)
         config.use_cache = True
         
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -388,31 +385,10 @@ class GFNTrainer(object):
             config=config,
             device_map=self.device
         )
-        
-        if self.args.is_lora:
-            lora_config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=["c_attn"],
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type="CAUSAL_LM"
-            )
-
-            self.model = get_peft_model(self.model, lora_config)
-            self.model.print_trainable_parameters()
             
         model_config = self.model.config
 
         if self.args.loss == "db" or self.args.loss == "fl-db":
-        # self.model.proj_z = nn.Linear(model_config.n_embd, 1).to(self.device)
-            # self.proj_z = nn.Sequential(
-            #     nn.Linear(model_config.n_embd, 256),
-            #     nn.ReLU(),
-            #     nn.Linear(256, 256),
-            #     nn.ReLU(),
-            #     nn.Linear(256, 1)
-            # ).to(self.device)
             self.proj_z = FlowFunction(model_config.n_embd).to(self.device)
             self.optimizer_flow = torch.optim.AdamW(self.proj_z.parameters(), lr=args.lr_flow)
 
@@ -425,11 +401,11 @@ class GFNTrainer(object):
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         
         scheduler = DPMSolverMultistepScheduler.from_pretrained(
-            args.target_model,
+            args.sd_name,
             subfolder="scheduler",
         )
         pipe = StableDiffusionPipeline.from_pretrained(
-            args.target_model,
+            args.sd_name,
             variant="fp16",
             scheduler=scheduler,
         )
@@ -444,7 +420,7 @@ class GFNTrainer(object):
         )
         
         self.aes_model = AestheticMlp(768)
-        state_dict = torch.load(args.aes_model)
+        state_dict = torch.load(args.aes_model, weights_only=True)
         self.aes_model.load_state_dict(state_dict)
         self.aes_model.to(device=self.device)
         self.aes_model.eval()
@@ -456,11 +432,11 @@ class GFNTrainer(object):
         
         self.num_samples = self.args.batch_size
         dataloader = get_dataloader(
-            "prompt-opt", self.tokenizer, prompt_file=args.prompt_file,
+            "prompt-adaptation", self.tokenizer, prompt_file=args.prompt_file,
             batch_size=torch.cuda.device_count(), shuffle=True, prefix=args.prefix)
         
         self.eval_dataloader = get_dataloader(
-            "prompt-opt", self.tokenizer, prompt_file=args.eval_prompt_file,
+            "prompt-adaptation", self.tokenizer, prompt_file=args.eval_prompt_file,
             batch_size=args.batch_size, shuffle=False, prefix=args.prefix)
 
         self.dataloader = self.accelerator.prepare(dataloader)
@@ -469,8 +445,6 @@ class GFNTrainer(object):
         
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=args.lr)
         t_total = args.train_steps * args.grad_acc_steps
-        # self.scheduler = get_linear_schedule_with_warmup(
-        #     self.optimizer, args.num_warmup_steps, t_total)
         
         if self.args.loss == "db" or self.args.loss == "fl-db":
             self.model, self.proj_z, self.ref_model, self.optimizer, self.optimizer_flow = self.accelerator.prepare(
@@ -571,7 +545,6 @@ class GFNTrainer(object):
                 proj_z.load_state_dict(ckpt["proj_z"])
                 optimizer_flow.load_state_dict(ckpt["optimizer_flow"])
             optimizer.load_state_dict(ckpt["optimizer"])
-            # scheduler.load_state_dict(ckpt["scheduler"])
 
             # load buffer
             buffer_ckpt = os.path.join(ckpt_dir, "buffer.pkl")
@@ -623,7 +596,6 @@ class GFNTrainer(object):
             text_features = self.clip_model.encode_text(tokens)
             image_features = image_features / image_features.norm(dim=1, keepdim=True)
             text_features = text_features / text_features.norm(dim=1, keepdim=True)
-            # logit_scale = self.clip_model.logit_scale.exp()
             logit = image_features @ text_features.t()
         scores = logit.diag().tolist()
         return scores
@@ -670,7 +642,6 @@ class GFNTrainer(object):
         
         # llh from reference model
         with torch.no_grad():
-            # lora_to_base(self.model)
             outputs = self.ref_model.module(input_ids=prompts_responses,
                                  attention_mask=attention_mask)
             logits = outputs.logits[:, prompt_len-1:-1]
@@ -682,7 +653,6 @@ class GFNTrainer(object):
             lm_logreward = torch.where(pad_mask, 0.0, lm_logreward)[:, :-1]
             lm_logreward_decom = lm_logreward.clone()
             lm_logreward = torch.sum(lm_logreward, 1)
-            # base_to_lora(self.model)
             
         # length penalty
         response_lengths = torch.sum((~pad_mask).long(), 1)
@@ -777,8 +747,6 @@ class GFNTrainer(object):
                 max_len=max_len,
                 num_samples=self.num_samples,
                 vargrad=self.args.vargrad,
-                exploration=self.args.exploration,
-                sparsemax=self.args.sparsemax,
                 proj_z=self.proj_z,
             )
             prompts_responses = outputs["actions"]
@@ -789,7 +757,7 @@ class GFNTrainer(object):
             batch = {k: v.repeat(self.num_samples, 1) for k, v in batch.items()}
             lm_logreward, lm_logreward_decom, aes_log_reward, rel_log_reward, decoded_responses = self.get_logreward(
                 batch, prompts_responses)
-            c_log_reward = aes_log_reward * self.args.aes_weight + rel_log_reward * self.args.rel_weight
+            c_log_reward = aes_log_reward + rel_log_reward
             
             results = {"lm_log_reward": lm_logreward,
                        "lm_log_reward_decom": lm_logreward_decom,
@@ -813,8 +781,6 @@ class GFNTrainer(object):
                 max_len=max_len,
                 num_samples=self.num_samples,
                 vargrad=self.args.vargrad,
-                exploration=self.args.exploration,
-                sparsemax=self.args.sparsemax,
             )
             prompts_responses = outputs["actions"]
             log_z = outputs["log_z"]
@@ -823,7 +789,7 @@ class GFNTrainer(object):
             batch = {k: v.repeat(self.num_samples, 1) for k, v in batch.items()}
             lm_log_reward, lm_logreward_decom, aes_log_reward, rel_log_reward, decoded_responses = self.get_logreward(
                 batch, prompts_responses)
-            c_log_reward = aes_log_reward * self.args.aes_weight + rel_log_reward * self.args.rel_weight
+            c_log_reward = aes_log_reward + rel_log_reward
 
             results = {"lm_log_reward": lm_log_reward,
                        "c_log_reward": c_log_reward,
@@ -843,7 +809,7 @@ class GFNTrainer(object):
         
         if self.loss == "tb":
             sum_logpf, log_z = get_logpf_and_logz(
-                prompt_batch, response_batch, self.model, self.tokenizer.eos_token_id, self.args.max_len, self.args.vargrad, self.args.sparsemax, temp)
+                prompt_batch, response_batch, self.model, self.tokenizer.eos_token_id, self.args.max_len, self.args.vargrad)
             if self.args.vargrad:
                 log_z += reward_batch["log_reward"]
 
@@ -857,7 +823,7 @@ class GFNTrainer(object):
             }
         elif self.args.loss == "db" or self.args.loss == "fl-db":
             log_pfs, log_fs, attn_mask = get_logpf_and_logf(
-                prompt_batch, response_batch, self.model, self.tokenizer.eos_token_id, self.args.max_len, self.args.vargrad, self.args.sparsemax, temp, proj_z=self.proj_z)
+                prompt_batch, response_batch, self.model, self.tokenizer.eos_token_id, self.args.max_len, self.args.vargrad, proj_z=self.proj_z)
             lm_logreward, lm_logreward_decom, aes_log_reward, rel_log_reward, decoded_responses = self.get_logreward(
                 prompt_batch, torch.cat([prompt_batch["input_ids"], response_batch["input_ids"]], dim=1))
             
