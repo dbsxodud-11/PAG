@@ -25,6 +25,10 @@ python main.py --mode train --exp_name pag \
                --batch_size 16 --grad_acc_steps 1
 ```
 
+You can also download the model checkpoint here: https://drive.google.com/drive/u/0/folders/1NUB7BFDnyS8Xsxq4Uy3tzdLFA9GRjKWS
+
+Place the download model into `save/pag` folder
+
 ### Evaluation
 ```
 python eval.py --checkpoint save/pag \
